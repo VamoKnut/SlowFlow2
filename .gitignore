@@ -1,0 +1,33 @@
+# .NET
+**/bin/
+**/obj/
+artifacts/
+TestResults/
+*.user
+*.suo
+
+# IDEs and editors
+.vs/
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/tasks.json
+
+# PlatformIO
+firmware/.pio/
+firmware/.cache/
+.clangd/
+__pycache__/
+*.py[cod]
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+appsettings.Local.json
+secrets.json
+
+# Logs and operating-system files
+*.log
+.DS_Store
+Thumbs.db

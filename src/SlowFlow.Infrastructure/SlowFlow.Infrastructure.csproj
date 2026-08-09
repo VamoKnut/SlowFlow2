@@ -1,0 +1,7 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\SlowFlow.Core\SlowFlow.Core.csproj" />
+  </ItemGroup>
+
+</Project>

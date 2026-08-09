@@ -1,0 +1,9 @@
+{
+  "recommendations": [
+    "editorconfig.editorconfig",
+    "github.vscode-github-actions",
+    "github.vscode-pull-request-github",
+    "ms-dotnettools.csdevkit",
+    "platformio.platformio-ide"
+  ]
+}

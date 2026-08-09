@@ -145,6 +145,12 @@ The web application and APIs shall never treat desired state as confirmed actual
 
 Version 1 shall use three roles.
 
+Version 1 shall use local ASP.NET Core Identity accounts. Identity role creation
+shall be idempotent. The first System Administrator shall be created through an
+explicit deployment command using environment-supplied credentials. Bootstrap
+credentials shall not be committed to source control or retained in ordinary
+application configuration.
+
 ### 6.1 System Administrator
 
 May:
@@ -174,6 +180,11 @@ Operators shall not manage users, global system security, or firmware releases.
 May view operational data, alarms, trends, assets, and history but may not issue commands or change configuration.
 
 ## 7\. Asset and geometry domain model
+
+Backend entity IDs and ASP.NET Core Identity user IDs shall use
+application-generated GUIDs. A drain node also has a separate unique,
+human-readable `NodeIdentifier`; this external identifier is not its database
+primary key.
 
 ```text
 Region
@@ -240,6 +251,10 @@ DrainCatchmentArea
 - HorizontalAreaSquareMetres
 - IsActive
 ```
+
+Each drain catchment area shall reference exactly one drain, and each drain
+shall belong to exactly one drain catchment area. The database shall enforce a
+unique constraint on `DrainCatchmentArea.DrainId`.
 
 ### 7.5 Catchment vertex
 
@@ -894,6 +909,12 @@ Device identity shall primarily use a hardware-provided identifier such as IMEI 
 
 A separate stable `NodeIdentifier`, such as `DN-000123`, shall be used in application data and MQTT topics.
 
+An administrator shall pre-register the drain node in the backend and generate
+its `NodeIdentifier`. The identifier shall be entered through the local
+provisioning workflow and persisted by the node before it connects to its MQTT
+topics. The immutable hardware identifier shall be reported during boot and
+used by the backend to verify and map the provisioned node.
+
 ### 16.4 Communication-loss behavior
 
 Initial configurable commissioning defaults:
@@ -928,7 +949,10 @@ Control loops and timeouts shall use monotonic time. Samples and events shall us
 * `MobileNetworkSynchronized`
 * `BackendSynchronized`
 
-Samples created before synchronization should retain boot-relative monotonic timing and be resolved to UTC after synchronization where possible.
+Samples created before synchronization shall retain boot-relative monotonic
+milliseconds. Their UTC timestamp shall remain null until it can be resolved
+after synchronization. Protocol DTOs and persisted telemetry shall carry both
+the nullable UTC value and the boot-relative monotonic value.
 
 ## 18\. Telemetry and local buffering
 
@@ -1038,10 +1062,19 @@ Recommended MVP settings:
   "bootId": "...",
   "sequenceNumber": 1042,
   "createdAtUtc": "2026-08-06T12:30:00Z",
+  "createdAtMonotonicMs": 187420,
   "timeQuality": "BackendSynchronized",
   "payload": {}
 }
 ```
+
+In MQTT topics and payloads, `drainNodeId` contains the external
+`NodeIdentifier`, not the backend database GUID. `sequenceNumber` is an
+unsigned, boot-scoped message sequence; its identity is the combination of
+`drainNodeId`, `bootId`, and `sequenceNumber`. Telemetry samples additionally
+carry a persistent unsigned 64-bit `SampleSequence` that continues across
+reboots. `createdAtUtc` is nullable when time is unsynchronized, while
+`createdAtMonotonicMs` is always populated for node-originated messages.
 
 ### 20.4 Message types
 
@@ -1057,6 +1090,11 @@ Recommended MVP settings:
 * `RemoteTemperature`
 * `Command`
 * `CommandAck`
+
+`ServerAck` shall include backend UTC and, when acknowledging telemetry, the
+highest contiguous persistent `SampleSequence` accepted for that drain node.
+The node shall retain later or non-contiguous samples until they are covered by
+a subsequent acknowledgement.
 
 ### 20.5 Command requirements
 
@@ -1089,6 +1127,9 @@ Desired state is separately versioned and includes normal operating mode and rel
 
 Both shall include expected previous version to prevent stale overwrite.
 
+Versions start at `1`; an initial snapshot carries expected previous version
+`0`.
+
 ## 21\. Backend architecture
 
 The MVP backend shall use three main projects:
@@ -1118,7 +1159,7 @@ Contains:
 * entities and enums;
 * typed configuration models;
 * protocol DTOs;
-* application services;
+* persistence-independent application logic and service contracts;
 * validation;
 * calculations;
 * API DTOs and stable error codes.
@@ -1132,13 +1173,22 @@ Contains:
 * ASP.NET Core Identity persistence;
 * firmware file storage;
 * API credential storage;
+* persistence-dependent application-service implementations;
 * concrete external providers.
 
-A generic repository layer is not required. EF Core may be used directly by clear application services.
+A generic repository layer is not required. Clear persistence-dependent
+application services in `SlowFlow.Infrastructure` may use EF Core directly.
+Project references shall remain one-way:
+
+```text
+SlowFlow.Core                no project dependencies
+SlowFlow.Infrastructure  -> SlowFlow.Core
+SlowFlow.Web             -> SlowFlow.Core + SlowFlow.Infrastructure
+```
 
 ## 22\. Backend application services
 
-Core services include:
+The application service set includes:
 
 * `MqttConnectionService`
 * `MqttMessageRouter`
@@ -1183,6 +1233,12 @@ Expired physical messages shall never be published later.
 
 ## 23\. Main backend persistence model
 
+Migrations shall evolve incrementally with the implementation phases. Phase 2
+shall create Identity, the asset and geometry hierarchy, drains, drain nodes,
+installations, and shared foundations required at that point. Later phases
+shall add their complete feature tables rather than creating placeholder tables
+in the initial migration.
+
 The database shall include at least:
 
 * regions, buildings, roofs, catchments, geometry, and drains;
@@ -1209,6 +1265,7 @@ DrainNodeTelemetrySample
 - DrainNodeInstallationId
 - SampleSequence
 - ObservedAtUtc
+- ObservedAtMonotonicMs
 - ReceivedAtUtc
 - BootId
 - WaterLevelMm
@@ -1226,6 +1283,10 @@ Unique identity:
 ```text
 DrainNodeId + SampleSequence
 ```
+
+`ObservedAtUtc` is nullable for samples captured before time synchronization.
+`ObservedAtMonotonicMs` is boot-relative and is interpreted together with
+`BootId`.
 
 ### 23.2 Configuration storage
 
@@ -1332,7 +1393,7 @@ GET /buildings/{buildingId}/drains
 GET /roofs/{roofId}/drains
 
 GET /drains/{drainId}
-GET /drains/{drainId}/timeseries?from=...\&to=...\&metrics=...
+GET /drains/{drainId}/timeseries?from=...&to=...&metrics=...
 ```
 
 When no parent ID is supplied, all entities of that type are returned, subject to configured result limits.
@@ -1673,15 +1734,15 @@ Non-sensitive defaults may be stored in `appsettings.json`. Environment-specific
 The repository shall include a complete `.env.example` containing placeholder names but no real credentials. Required settings shall include at least:
 
 ```text
-ASPNETCORE\_ENVIRONMENT
-ConnectionStrings\_\_SlowFlowDatabase
-Mqtt\_\_Host
-Mqtt\_\_Port
-Mqtt\_\_UseTls
-Mqtt\_\_Username
-Mqtt\_\_Password
-SlowFlow\_\_FirmwareStoragePath
-SlowFlow\_\_LogPath
+ASPNETCORE_ENVIRONMENT
+ConnectionStrings__SlowFlowDatabase
+Mqtt__Host
+Mqtt__Port
+Mqtt__UseTls
+Mqtt__Username
+Mqtt__Password
+SlowFlow__FirmwareStoragePath
+SlowFlow__LogPath
 ```
 
 The deployment guide shall explain how to protect the real environment file, restrict file permissions and prevent it from being committed to GitHub.
@@ -1977,6 +2038,11 @@ Firmware that fails compatibility, integrity, or authenticity verification shall
 
 Each phase shall build and test before the next phase begins.
 
+The Phase 1 GitHub baseline consists of tracked CI workflow files, VS Code
+extension recommendations and tasks, and source-control hygiene. Branch
+protection, repository secrets, and other GitHub-hosted settings are external
+administrative configuration and are not modified by the repository scaffold.
+
 ## 35\. Code-generation rules
 
 Code generation shall:
@@ -2012,4 +2078,3 @@ Most previously open MVP requirements have now been resolved. The following deta
 2. **Concrete Portenta H7 OTA implementation:** OTA library, bootloader/update mechanism, flash layout, authenticity/signature implementation, recovery/rollback mechanism, and key provisioning. These shall be selected after evaluating existing libraries and reference implementations through a technical prototype.
 
 Commissioning parameters identified elsewhere in this specification remain configurable and may be tuned on the physical prototype without being treated as unresolved architectural requirements.
-

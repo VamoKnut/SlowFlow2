@@ -1,0 +1,56 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "SlowFlow: Build .NET",
+      "type": "process",
+      "command": "dotnet",
+      "args": ["build", "SlowFlow.sln", "--configuration", "Debug"],
+      "problemMatcher": "$msCompile",
+      "group": "build"
+    },
+    {
+      "label": "SlowFlow: Test .NET",
+      "type": "process",
+      "command": "dotnet",
+      "args": ["test", "SlowFlow.sln", "--configuration", "Debug"],
+      "problemMatcher": "$msCompile",
+      "group": "test"
+    },
+    {
+      "label": "SlowFlow: Build firmware",
+      "type": "process",
+      "command": "pio",
+      "args": ["run", "--project-dir", "firmware"],
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "SlowFlow: Compile firmware tests",
+      "type": "process",
+      "command": "pio",
+      "args": [
+        "test",
+        "--project-dir",
+        "firmware",
+        "--environment",
+        "portenta_h7_m7",
+        "--without-uploading",
+        "--without-testing"
+      ],
+      "problemMatcher": [],
+      "group": "test"
+    },
+    {
+      "label": "SlowFlow: Verify Phase 1",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "SlowFlow: Build .NET",
+        "SlowFlow: Test .NET",
+        "SlowFlow: Build firmware",
+        "SlowFlow: Compile firmware tests"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}
